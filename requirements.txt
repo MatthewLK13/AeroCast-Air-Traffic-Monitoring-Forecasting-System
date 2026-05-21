@@ -1,0 +1,9 @@
+pandas
+geopandas
+streamlit
+pydeck
+FlightRadarAPI
+neuralprophet
+shapely
+requests
+folium
