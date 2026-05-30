@@ -31,8 +31,16 @@ IF %ERRORLEVEL% NEQ 0 (
 echo [OK] Python da san sang.
 echo.
 echo Dang kiem tra va tai cac thanh phan AI (Neu ban chay lan dau se mat vai phut)...
-python -m pip install --upgrade pip -q
-python -m pip install -r requirements.txt -q
+
+IF NOT EXIST "venv\Scripts\python.exe" (
+    echo [INFO] Dang tao moi truong ao Virtual Environment de tranh loi xung dot tren may nay...
+    python -m venv venv
+)
+call venv\Scripts\activate.bat
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install typing-extensions
 
 echo.
 echo ========================================================
@@ -40,7 +48,7 @@ echo   BAT DAU KHOI DONG HE THONG!
 echo ========================================================
 echo.
 echo [1/2] Dang khoi dong cong cu quet Radar ngam...
-start cmd /k "TITLE Radar Collector & python collector2.py"
+start cmd /k "TITLE Radar Collector & call venv\Scripts\activate.bat & python collector2.py"
 
 echo [2/2] Dang bat Giao dien dieu khien (Dashboard)...
 python -m streamlit run app.py

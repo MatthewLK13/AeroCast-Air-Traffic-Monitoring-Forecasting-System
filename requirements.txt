@@ -7,3 +7,4 @@ neuralprophet
 shapely
 requests
 folium
+typing_extensions

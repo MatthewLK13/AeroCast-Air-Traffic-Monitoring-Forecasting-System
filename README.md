@@ -1,7 +1,7 @@
 # ✈️ AEROCAST: HỆ THỐNG GIÁM SÁT VÀ DỰ BÁO KHÔNG LƯU (PHÂN KHU 2)
 **Bản quyền & Phát triển bởi: Lương Minh Khôi (Luong Minh Khoi) © 2026**
 
-Chào mừng bạn đến với AeroCast - Hệ thống Giám sát Không lưu tích hợp Trí tuệ Nhân tạo (AI). Ứng dụng này được thiết kế để bất kỳ ai cũng có thể khởi chạy mà không cần kiến thức lập trình!
+Chào mừng bạn đến với AeroCast - Hệ thống Giám sát Không lưu tích hợp Trí tuệ Nhân tạo (AI).
 
 ---
 

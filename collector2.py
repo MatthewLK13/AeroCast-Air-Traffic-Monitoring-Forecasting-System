@@ -1,66 +1,69 @@
 import sqlite3
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 import time
+import requests
 from datetime import datetime
 from FlightRadarAPI import FlightRadar24API
 import pandas as pd
 import geopandas as gpd
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, LineString
+import math
+import logging
+
+logging.disable(logging.CRITICAL)
 
 fr_api = FlightRadar24API()
 
-# 1. ĐỌC FILE BẢN ĐỒ VIỆT NAM (vn.json)
 try:
     vn_gdf = gpd.read_file('vn.json')
-    # Gộp tất cả các tỉnh/mảnh bản đồ thành 1 khối lãnh thổ duy nhất
     vn_geom = vn_gdf.geometry.union_all() if hasattr(vn_gdf.geometry, 'union_all') else vn_gdf.geometry.unary_union
 except Exception as e:
     print(f"Lỗi đọc file vn.json (Kiểm tra lại xem file đã nằm trong thư mục chưa): {e}")
     exit()
 
-# 2. KHỞI TẠO KHUÔN CẮT (OVERSIZED POLYGON)
 aviation_points = [
-    (107.6078, 13.3056),  # D01
-    (107.9908, 13.3308),  # E01
-    (108.5061, 13.3639),  # D23
-    (108.6575, 13.2606),  # D24
-    (108.6486, 12.5097),  # DN4
-    (108.3619, 12.0281),  # E04
-    (107.9728, 12.2983),  # E02
-    (106.9792, 10.8792),  # E03
-    (106.6383, 11.0881),  # RUNOP
-    (105.9103, 11.2625)   # D15
+    (107.6078, 13.3056),
+    (107.9908, 13.3308),
+    (108.5061, 13.3639),
+    (108.6575, 13.2606),
+    (108.6486, 12.5097),
+    (108.3619, 12.0281),
+    (107.9728, 12.2983),
+    (106.9792, 10.8792),
+    (106.6383, 11.0881),
+    (105.9103, 11.2625)
 ]
 
-# Vẽ các điểm đâm lố sang phía Tây (Campuchia) để tạo khuôn gọt
 overshoot_points = [
-        (105.0000, 11.0000),         # Bước 1: Từ D15 đâm lố sâu sang phía Tây (Campuchia)
-        (105.0000, 13.3056),         # Bước 2: Kéo lên phía Bắc, NHƯNG DỪNG LẠI ĐÚNG ở vĩ độ của D01
-        (107.6078, 13.3056)          # Bước 3: Kéo ngang sang Đông để chạm chuẩn xác vào D01
+        (105.0000, 11.0000),
+        (105.0000, 13.3056),
+        (107.6078, 13.3056)
     ]
 
 oversized_poly = Polygon(aviation_points + overshoot_points)
 
-# 3. THỰC HIỆN PHÉP GIAO (INTERSECTION) THẦN THÁNH
-# Lấy phần chung giữa Khuôn cắt và Bản đồ VN -> Ra chính xác Phân khu 2
 polygon_large = oversized_poly.intersection(vn_geom)
 
-# Đa giác nhỏ (Part B - nằm hoàn toàn trong nội địa nên giữ nguyên)
 polygon_small = Polygon([(108.6486, 12.5097), (108.6408, 11.8339), (108.3619, 12.0281)])
 
-# Đóng gói vào GeoPandas
 gdf_sectors = gpd.GeoDataFrame({
     'part_id': ['Part_A', 'Part_B'],
-    'max_altitude': [26500, 30500],
+    'max_altitude': [46000, 30500],
     'geometry': [polygon_large, polygon_small]
 }, crs="EPSG:4326")
 
-bounds = "13.5,10.5,105.5,109.5"
+core_geom = gdf_sectors.geometry.union_all() if hasattr(gdf_sectors.geometry, 'union_all') else gdf_sectors.geometry.unary_union
+buffer_geom = core_geom.buffer(2.5).difference(core_geom)
+gdf_buffer = gpd.GeoDataFrame({'geometry': [buffer_geom]}, crs="EPSG:4326")
+
+bounds = "16.0,8.0,103.0,112.0"
 
 def init_db():
     conn = sqlite3.connect('flight_data.db')
     cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS sector_density 
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME, aircraft_count INTEGER)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS sector_density
+                      (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME, aircraft_count INTEGER, precipitation REAL DEFAULT 0.0, wind_speed REAL DEFAULT 0.0, cloud_cover REAL DEFAULT 0.0, visibility REAL DEFAULT 10000.0, buffer_count INTEGER DEFAULT 0, buffer_n INTEGER DEFAULT 0, buffer_s INTEGER DEFAULT 0, buffer_e INTEGER DEFAULT 0, buffer_w INTEGER DEFAULT 0)''')
     conn.commit()
     return conn
 
@@ -69,22 +72,97 @@ def fetch_and_save_data(conn):
         raw_flights = fr_api.get_flights(bounds=bounds)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         valid_aircraft_count = 0
-        
+        buffer_aircraft_count = 0
+
+        precipitation = 0.0
+        wind_speed = 0.0
+        cloud_cover = 0.0
+        visibility = 10000.0
+        try:
+            w_url = "https://api.open-meteo.com/v1/forecast?latitude=12.6667&longitude=108.0383&current=precipitation,wind_speed_10m,cloud_cover,visibility"
+            w_resp = requests.get(w_url, timeout=5).json()
+            if "current" in w_resp:
+                precipitation = float(w_resp["current"].get("precipitation", 0.0))
+                wind_speed = float(w_resp["current"].get("wind_speed_10m", 0.0))
+                cloud_cover = float(w_resp["current"].get("cloud_cover", 0.0))
+                visibility = float(w_resp["current"].get("visibility", 10000.0))
+        except Exception as e:
+            print(f"Lỗi lấy thời tiết: {e}")
+
         if raw_flights:
-            df_flights = pd.DataFrame([{"longitude": f.longitude, "latitude": f.latitude, "altitude": f.altitude} for f in raw_flights])
+            df_flights = pd.DataFrame([{
+                "longitude": f.longitude,
+                "latitude": f.latitude,
+                "altitude": f.altitude,
+                "heading": getattr(f, 'heading', 0),
+                "speed": getattr(f, 'speed', getattr(f, 'ground_speed', 0))
+            } for f in raw_flights])
+
             gdf_flights = gpd.GeoDataFrame(df_flights, geometry=gpd.points_from_xy(df_flights.longitude, df_flights.latitude), crs="EPSG:4326")
-            
+
             joined = gpd.sjoin(gdf_flights, gdf_sectors, how="inner", predicate="within")
             gdf_valid = joined[joined['altitude'] <= joined['max_altitude']]
             valid_aircraft_count = len(gdf_valid)
-        
+
+            joined_buffer = gpd.sjoin(gdf_flights, gdf_buffer, how="inner", predicate="within")
+            raw_buffer_count = len(joined_buffer)
+
+            inbound_threat_count = 0
+            buffer_n = 0
+            buffer_s = 0
+            buffer_e = 0
+            buffer_w = 0
+
+            cx, cy = core_geom.centroid.x, core_geom.centroid.y
+
+            for idx, row in joined_buffer.iterrows():
+                speed = row.get('speed', 0)
+                heading = row.get('heading', 0)
+
+                if speed < 100:
+                    continue
+
+                distance_km = speed * 1.852 * 0.75
+
+                lat, lon = row['latitude'], row['longitude']
+
+                dy_km = distance_km * math.cos(math.radians(heading))
+                dx_km = distance_km * math.sin(math.radians(heading))
+
+                dy_deg = dy_km / 111.32
+                dx_deg = dx_km / (111.32 * math.cos(math.radians(lat)))
+
+                new_lat = lat + dy_deg
+                new_lon = lon + dx_deg
+
+                flight_vector = LineString([(lon, lat), (new_lon, new_lat)])
+
+                if flight_vector.intersects(core_geom):
+                    inbound_threat_count += 1
+                    dlat = lat - cy
+                    dlon = lon - cx
+                    if abs(dlat) > abs(dlon):
+                        if dlat > 0: buffer_n += 1
+                        else: buffer_s += 1
+                    else:
+                        if dlon > 0: buffer_e += 1
+                        else: buffer_w += 1
+
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO sector_density (timestamp, aircraft_count) VALUES (?, ?)", (current_time, valid_aircraft_count))
+        cursor.execute("INSERT INTO sector_density (timestamp, aircraft_count, precipitation, wind_speed, cloud_cover, visibility, buffer_count, buffer_n, buffer_s, buffer_e, buffer_w) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       (current_time, valid_aircraft_count, precipitation, wind_speed, cloud_cover, visibility, buffer_aircraft_count, buffer_n, buffer_s, buffer_e, buffer_w))
         conn.commit()
-        print(f"[{current_time}] [GIS Intersection] Mật độ Phân khu 2: {valid_aircraft_count} chiếc.")
-        
+
+        threat_level = "WARN" if buffer_aircraft_count > 0 else "OK  "
+        print(f"[OK]   {current_time} | SECTOR_CORE   | Active Aircraft: {valid_aircraft_count}")
+        print(f"[{threat_level}] {current_time} | KINEMATICS    | Inbound Threats: {buffer_aircraft_count} [N:{buffer_n} | S:{buffer_s} | E:{buffer_e} | W:{buffer_w}]")
+        print(f"[INFO] {current_time} | WEATHER_METAR | Precip: {precipitation}mm | Wind: {wind_speed}km/h | Clouds: {cloud_cover}%")
+        print(f"[OK]   {current_time} | DB_STORAGE    | Data committed to flight_data.db")
+        print("-" * 85)
+
     except Exception as e:
-        print(f"Lỗi: {e}")
+        error_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[ERR]  {error_time} | SYSTEM_CRASH  | {e}")
 
 if __name__ == "__main__":
     db_conn = init_db()
