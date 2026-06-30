@@ -1,0 +1,446 @@
+\documentclass[12pt,a4paper]{article}
+
+% --- KHAI BÁO CÁC GÓI THƯ VIỆN CẦN THIẾT ---
+\usepackage[utf8]{inputenc}
+\usepackage[T5]{fontenc}
+\usepackage[vietnamese]{babel}
+\usepackage{amsmath}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+\usepackage{geometry}
+\geometry{a4paper, margin=1in}
+
+% --- THÔNG TIN TRANG BÌA ---
+\title{\textbf{TỔNG QUAN TÀI LIỆU} \\ \large Nghiên cứu Ứng dụng Mô hình NeuralProphet, ARIMA và LSTM trong Bài toán Dự báo Luồng Không lưu}
+\author{Lương Minh Khôi}
+\date{Tháng 6 năm 2026}
+
+\begin{document}
+\maketitle
+
+%===============================================================================
+% SECTION 1: INTRODUCTION
+%===============================================================================
+
+\section{Giới thiệu tổng quan}
+
+\subsection{Bối cảnh nghiên cứu}
+
+Quản lý luồng không lưu (ATFM) đóng vai trò then chốt trong việc bảo đảm sự cân bằng giữa nhu cầu khai thác và năng lực của hệ thống quản lý không lưu. Trong đó, công tác dự báo chuỗi thời gian là một thành phần cốt lõi, cho phép Kiểm soát viên không lưu (KSVKL) lường trước lưu lượng tàu bay, từ đó đưa ra các quyết định chiến lược về điều phối sức chứa phân khu và phân bổ nguồn lực. Việc lựa chọn một mô hình dự báo tối ưu có tác động trực tiếp đến độ chính xác của dự báo, hiệu năng tính toán và tính minh bạch trong việc ra quyết định điều hành.
+
+Nhận thức được tầm quan trọng đó, tài liệu này tiến hành đánh giá ba phương pháp dự báo chuỗi thời gian tiêu biểu: NeuralProphet, ARIMA và LSTM. Nghiên cứu tập trung cung cấp các số liệu đánh giá (benchmark) đã được xác minh từ các nguồn tài liệu bình duyệt (peer-reviewed), nhằm làm cơ sở khoa học để đề xuất giải pháp cho hệ thống AeroCast VAA.
+
+\subsection{Mục tiêu nghiên cứu}
+
+Tài liệu này tập trung giải quyết các mục tiêu cụ thể sau:
+
+\begin{enumerate}
+    \item Đánh giá đặc tính hiệu suất của mô hình NeuralProphet so với các phương pháp thống kê truyền thống.
+    \item Xác định các điều kiện khai thác phù hợp để ứng dụng mô hình ARIMA so với các phương pháp Học sâu (Deep Learning).
+    \item Phân tích những hạn chế của mô hình LSTM khi áp dụng vào các tập dữ liệu có quy mô nhỏ.
+    \item Đề xuất mô hình dự báo khả thi và hiệu quả nhất cho công tác quản lý luồng không lưu ngắn hạn.
+\end{enumerate}
+
+\subsection{Phạm vi và đối tượng nghiên cứu}
+
+Nghiên cứu này tổng hợp dữ liệu từ các bản thảo trên hệ thống arXiv, kỷ yếu hội nghị của IEEE và các công bố khoa học uy tín. Do giới hạn về quyền truy cập đối với một số tài liệu có bản quyền, các chỉ số đánh giá được trích xuất từ phần tóm tắt và các phân đoạn dữ liệu khả dụng. Khuyến nghị của nghiên cứu được thiết lập dựa trên tính toàn vẹn và mức độ sẵn có của các bằng chứng thực nghiệm.
+
+%===============================================================================
+% SECTION 2: METHODOLOGY
+%===============================================================================
+
+\section{Phương pháp Nghiên cứu}
+
+\subsection{Nguồn thu thập dữ liệu}
+
+Các cơ sở dữ liệu học thuật và kho lưu trữ sau đây đã được sử dụng làm cơ sở tham khảo:
+
+\begin{itemize}
+    \item \textbf{arXiv:} Hệ thống lưu trữ tài liệu khoa học mở trong lĩnh vực khoa học máy tính và thống kê.
+    \item \textbf{IEEE Xplore:} Thư viện số chuyên ngành kỹ thuật và công nghệ điện tử.
+    \item \textbf{Google Scholar:} Nền tảng tra cứu tài liệu học thuật tổng hợp.
+    \item \textbf{Kaggle Competitions:} Nguồn cung cấp dữ liệu thực nghiệm từ các cuộc thi dự báo M4 và M5.
+\end{itemize}
+
+\subsection{Các chỉ số đánh giá hiệu năng (Evaluation Metrics)}
+
+Nghiên cứu ưu tiên sử dụng ba chỉ số đánh giá sai số cốt lõi. Mỗi chỉ số được lựa chọn đều mang ý nghĩa quan trọng trong thực tiễn điều hành bay:
+
+\subsubsection{1. Chỉ số RMSE (Root Mean Square Error)}
+\begin{equation}
+RMSE = \sqrt{\frac{1}{n}\sum_{i=1}^{n}(y_i - \hat{y}_i)^2}
+\end{equation}
+
+\textbf{Ứng dụng trong thực tiễn kiểm soát không lưu:} 
+Đặc tính của RMSE là bình phương sai số trước khi tính trung bình, qua đó khuếch đại và làm nổi bật các sai lệch lớn. Trong thực tiễn khai thác, nếu mô hình dự báo sai lệch một tàu bay trong nhiều chu kỳ liên tiếp, KSVKL vẫn có khả năng điều hòa luồng không lưu một cách an toàn. Tuy nhiên, nếu hệ thống dự báo sai lệch một số lượng lớn tàu bay chỉ trong một chu kỳ duy nhất, phân khu kiểm soát có nguy cơ rơi vào trạng thái quá tải (Sector Overload), uy hiếp trực tiếp đến an toàn bay. Do đó, RMSE là chỉ số đánh giá độ tin cậy cốt lõi, đảm bảo mô hình hạn chế tối đa các sai lệch mang tính rủi ro cao.
+
+\subsubsection{2. Chỉ số MAPE (Mean Absolute Percentage Error)}
+\begin{equation}
+MAPE = \frac{100\%}{n}\sum_{i=1}^{n}\left|\frac{y_i - \hat{y}_i}{y_i}\right|
+\end{equation}
+
+\textbf{Ứng dụng trong thực tiễn kiểm soát không lưu:}
+Chỉ số MAPE biểu diễn sai số dưới định dạng phần trăm (\%), hỗ trợ KSVKL đánh giá trực quan mức độ nghiêm trọng của sự sai lệch so với tổng lưu lượng khai thác thực tế. Việc dự báo chênh lệch 2 tàu bay trên tổng lưu lượng 40 tàu bay (sai số 5\%) nằm trong ngưỡng an toàn cho phép. Tuy nhiên, nếu lưu lượng thực tế chỉ có 3 tàu bay nhưng hệ thống sai lệch 2 tàu bay (sai số 66.6\%), điều này phản ánh sự bất ổn định của mô hình tính toán. MAPE giúp chuẩn hóa việc đánh giá mức độ rủi ro bất chấp quy mô năng lực của từng phân khu.
+
+\subsubsection{3. Chỉ số MASE (Mean Absolute Scaled Error)}
+\begin{equation}
+MASE = \frac{\frac{1}{n}\sum_{t=1}^{n}|y_t - \hat{y}_t|}{\frac{1}{n-1}\sum_{t=2}^{n}|y_t - y_{t-1}|}
+\end{equation}
+
+\textbf{Ứng dụng trong thực tiễn kiểm soát không lưu:}
+Chỉ số MASE thực hiện việc so sánh sai số của mô hình đề xuất (tử số) với sai số của phương pháp dự báo cơ sở (Dự báo Naive - mẫu số). Trong ngữ cảnh quản lý không lưu, dự báo Naive tương đương với việc ngoại suy trực tiếp lưu lượng hiện tại cho chu kỳ tiếp theo mà không thông qua phân tích xu hướng.
+\begin{itemize}
+    \item \textbf{Trường hợp MASE > 1:} Hiệu suất của mô hình hệ thống thấp hơn phương pháp ngoại suy cơ bản, chứng tỏ thuật toán không mang lại giá trị cải thiện trong thực tiễn điều hành.
+    \item \textbf{Trường hợp MASE < 1:} Khẳng định sự ưu việt của mô hình trong việc phân tích và dự báo chính xác động học không lưu. Đây là thước đo khách quan nhằm đánh giá tính khả thi và độ tin cậy của hệ thống.
+\end{itemize}
+
+%===============================================================================
+% SECTION 3: NEURALPROPHET
+%===============================================================================
+
+\section{Cơ sở Lý thuyết Mô hình NeuralProphet}
+
+\subsection{Nguồn gốc và Khái quát}
+
+Mô hình NeuralProphet được nghiên cứu và phát triển bởi nhóm chuyên gia khoa học dữ liệu của Meta (Facebook Core Data Science) vào năm 2021:
+
+\begin{quote}
+\textbf{Tribe, O., Hewamalage, H., Pilyugina, P., Laptev, N., Bergmeir, C., \& Rajagopal, R. (2021).} \textit{NeuralProphet: Explainable Forecasting at Scale.} arXiv:2111.15397.
+\end{quote}
+
+\subsection{Kiến trúc mô hình và Ứng dụng thực tiễn}
+
+Mô hình NeuralProphet tích hợp các thành phần phân tích thống kê cổ điển kết hợp cùng kiến trúc mạng nơ-ron thông qua phương trình:
+
+\begin{equation}
+\hat{y}(t) = \underbrace{Trend(t)}_{\text{Xu hướng}} + \underbrace{Seasonality(t)}_{\text{Tính mùa vụ}} + \underbrace{AR\text{-}Net(t)}_{\text{NN tự hồi quy}} + \underbrace{Regressors(t)}_{\text{Biến ngoại sinh}}
+\end{equation}
+
+\textbf{Chi tiết các thành phần trong công tác Quản lý luồng không lưu:}
+\begin{itemize}
+    \item \textbf{$\hat{y}(t)$:} Dự báo tổng lưu lượng tàu bay tiến nhập vào phân khu kiểm soát tại thời điểm $t$ định trước.
+    \item \textbf{$Trend(t)$:} Xu hướng thay đổi dài hạn của luồng không lưu. Trong thực tiễn khai thác, yếu tố này phản ánh sự tăng trưởng lưu lượng trong các giai đoạn cao điểm du lịch hoặc tiến trình phục hồi mạng đường bay, duy trì mật độ khai thác ở tần suất cao.
+    \item \textbf{$Seasonality(t)$:} Yếu tố chu kỳ. Hỗ trợ hệ thống nhận diện các khung giờ cao điểm cố định trong ngày (ví dụ: khung giờ cất cánh buổi sáng) hoặc sự phân bổ lưu lượng không đồng đều giữa các ngày trong tuần.
+    \item \textbf{$AR-Net(t)$:} Mạng nơ-ron tự hồi quy. Đây là cơ chế cốt lõi giúp mô hình tiếp thu xu hướng động học của dòng không lưu. Dựa trên số lượng tàu bay vừa vượt qua các điểm báo cáo bắt buộc (Ví dụ: điểm ANLOC), mô hình tự động suy diễn và phân bổ chính xác số lượng tàu bay chuẩn bị tiến nhập vào phân khu tiếp cận trong các chu kỳ kế tiếp.
+    \item \textbf{$Regressors(t)$:} Biến ngoại sinh. Yếu tố này đóng vai trò quyết định trong việc hiệu chỉnh kết quả dự báo dưới tác động của môi trường:
+    \begin{itemize}
+        \item \textit{Điều kiện khí tượng tiêu chuẩn:} Lưu lượng tàu bay tuân thủ nghiêm ngặt Kế hoạch bay (Flight Plan) và năng lực khai thác của sân bay. $Regressors(t)$ duy trì ở trạng thái tĩnh.
+        \item \textit{Điều kiện khí tượng bất lợi:} Khi xuất hiện mây dông (Cumulonimbus), tổ lái và KSVKL buộc phải áp dụng các phương thức bay vòng (Holding) hoặc bay tránh bão. Dưới sự tác động mạnh của biến thời tiết, hệ thống tự động tính toán và điều chỉnh giảm giá trị $\hat{y}(t)$, bảo đảm sản lượng dự báo đồng bộ với năng lực tiếp thu thực tế của đường băng, ngăn ngừa sự cố tắc nghẽn cục bộ.
+    \end{itemize}
+\end{itemize}
+
+\subsection{Đánh giá kết quả thực nghiệm (Benchmark)}
+
+\subsubsection{Đánh giá chỉ số MASE}
+
+Bảng \ref{tab:np_mase} biểu diễn kết quả so sánh hiệu suất giữa mô hình NeuralProphet và mô hình Prophet tiền nhiệm.
+
+\begin{table}[htbp]
+\centering
+\caption{Đánh giá hiệu năng MASE: NeuralProphet và Prophet (Chỉ số thấp biểu thị hiệu suất cao)}
+\label{tab:np_mase}
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Mô hình} & \textbf{Dự báo 1 bước} & \textbf{3 bước} & \textbf{60 bước} \\
+\hline
+Prophet (Cơ bản) & 8.54 ($\pm$2.17) & -- & -- \\
+NeuralProphet (Cơ bản) & 8.49 ($\pm$2.03) & -- & -- \\
+NeuralProphet (30 độ trễ) & \textbf{0.62} ($\pm$0.07) & 0.99 & -- \\
+NeuralProphet (120 độ trễ) & \textbf{0.62} ($\pm$0.07) & 0.94 & 3.77 \\
+\hline
+\end{tabular}
+\end{table}
+
+Sự suy giảm chỉ số MASE từ ngưỡng $\approx$8.5 xuống mức $\approx$0.6 đã minh chứng cho tính ưu việt của mạng nơ-ron tự hồi quy trong quá trình nội suy dữ liệu. Nhóm tác giả khẳng định mô hình làm giảm sai số dự báo từ \textbf{55\% đến 92\%} so với các phương pháp truyền thống.
+
+\subsubsection{Đánh giá tài nguyên tính toán}
+
+\begin{table}[htbp]
+\centering
+\caption{Phân tích độ trễ hệ thống (Chỉ số thấp biểu thị tốc độ cao)}
+\label{tab:np_compute}
+\begin{tabular}{|l|c|c|}
+\hline
+\textbf{Chỉ số} & \textbf{NeuralProphet} & \textbf{Prophet} \\
+\hline
+Thời gian huấn luyện & 20.50s ($\pm$4.70) & 5.07s ($\pm$2.30) \\
+Thời gian xuất dự báo & \textbf{0.16s} ($\pm$0.05) & 2.16s ($\pm$1.08) \\
+\hline
+\end{tabular}
+\end{table}
+
+Dù yêu cầu thời lượng huấn luyện gia tăng (chậm hơn 4 lần), thuật toán NeuralProphet đạt tốc độ xuất kết quả dự báo ưu việt (nhanh hơn 13 lần), hoàn toàn đáp ứng yêu cầu vận hành theo thời gian thực (real-time) của các hệ thống ATM.
+
+%===============================================================================
+% SECTION 4: ARIMA
+%===============================================================================
+
+\section{Cơ sở Lý thuyết Mô hình ARIMA}
+
+\subsection{Tổng quan}
+
+Mô hình ARIMA (Auto-Regressive Integrated Moving Average) là một trong những phương pháp nền tảng trong lĩnh vực phân tích chuỗi thời gian, được hệ thống hóa bởi Box và Jenkins vào thập niên 1970.
+
+\subsection{Cơ sở Toán học và Ứng dụng Khai thác}
+
+Phương trình tổng quát của mô hình ARIMA(p, d, q) được biểu diễn như sau:
+
+\begin{equation}
+\phi(B)(1-B)^d y_t = \theta(B) \epsilon_t
+\end{equation}
+
+\textbf{Ứng dụng các tham số trong công tác điều hành bay:}
+\begin{itemize}
+    \item \textbf{$y_t$:} Số lượng tàu bay thực tế được ghi nhận tại phân đoạn thời gian $t$.
+    \item \textbf{$B$:} Toán tử dịch lùi (Backshift), đại diện cho các giá trị lưu lượng trong các chu kỳ khai thác trước đó.
+    \item \textbf{$d$:} Bậc vi phân (Differencing). Thành phần này có chức năng loại bỏ tính không dừng (non-stationary) của chuỗi dữ liệu, đóng vai trò như một cơ chế làm phẳng sự biến động đột ngột của luồng không lưu, giúp mô hình đạt trạng thái cân bằng để phân tích.
+    \item \textbf{$\phi(B)$:} Đa thức Tự hồi quy (AR). Phân tích sự phụ thuộc tuyến tính của lưu lượng hiện tại vào dữ liệu quá khứ. Trong thực tiễn, nếu lưu lượng tàu bay tăng trưởng liên tục qua các chu kỳ quan trắc, thành phần AR sẽ thiết lập cơ sở toán học để dự báo duy trì đà tăng trong chu kỳ tiếp theo.
+    \item \textbf{$\theta(B)$:} Đa thức Trung bình động (MA). Có chức năng đo lường và triệt tiêu các sai số ngẫu nhiên ($\epsilon_t$). Điển hình như trường hợp một chuyến bay ưu tiên xin cấp huấn lệnh hạ cánh đột xuất gây nhiễu loạn biểu đồ, thành phần MA sẽ tự động hiệu chỉnh và hấp thụ sai số này, bảo đảm tính ổn định của chuỗi dự báo tương lai.
+\end{itemize}
+
+\subsection{Hạn chế của mô hình}
+
+Dù sở hữu tính minh bạch cao nhờ cấu trúc hệ số rõ ràng, mô hình ARIMA bị ràng buộc bởi các giả định tuyến tính cứng nhắc. Hơn nữa, việc tích hợp các biến động khí tượng đòi hỏi triển khai cấu trúc ARIMAX phức tạp và thiếu khả năng định lượng khoảng tin cậy (Confidence Interval) nhằm hỗ trợ KSVKL đánh giá mức độ rủi ro trong công tác lập kế hoạch.
+
+%===============================================================================
+% SECTION 5: LSTM
+%===============================================================================
+
+\section{Cơ sở Lý thuyết Mô hình LSTM}
+
+\subsection{Tổng quan}
+
+Mạng Bộ nhớ Ngắn-Dài hạn (LSTM - Long Short-Term Memory) là cấu trúc mạng nơ-ron hồi quy chuyên dụng, được tối ưu hóa để tiếp thu các mối tương quan phụ thuộc dài hạn trong chuỗi dữ liệu phức tạp.
+
+\subsection{Kiến trúc Mạng và Cơ chế Hoạt động trong Thực tiễn}
+
+Cấu trúc cốt lõi của một khối LSTM bao gồm Trạng thái ô (Cell State - $c_t$) hoạt động như một luồng bộ nhớ chủ đạo, được kiểm soát bởi ba cơ chế cổng (Gates) nhằm quản lý quá trình lưu thông thông tin:
+
+\begin{equation}
+f_t = \sigma(W_f \cdot [h_{t-1}, x_t] + b_f) \quad \text{(Cổng Quên)}
+\end{equation}
+\begin{equation}
+i_t = \sigma(W_i \cdot [h_{t-1}, x_t] + b_i) \quad \text{(Cổng Nhập)}
+\end{equation}
+\begin{equation}
+o_t = \sigma(W_o \cdot [h_{t-1}, x_t] + b_o) \quad \text{(Cổng Xuất)}
+\end{equation}
+
+\textbf{Ứng dụng cơ chế vận hành trong quản lý không lưu:}
+\begin{itemize}
+    \item \textbf{Cổng quên ($f_t$):} Sử dụng hàm kích hoạt Sigmoid để quyết định mức độ loại bỏ dữ liệu cũ. Trong quá trình điều hành bay, khi một tàu bay đã hạ cánh an toàn và thoát ly khỏi đường cất hạ cánh, thuật toán sẽ tính toán đưa giá trị $f_t$ về 0, qua đó triệt tiêu dữ liệu của tàu bay đó khỏi bộ nhớ hệ thống nhằm giải phóng dung lượng phục vụ cho hoạt động giám sát các mục tiêu mới.
+    
+    \item \textbf{Cổng nhập ($i_t$):} Phân tích và quyết định các thông tin mới cần tích hợp vào bộ nhớ. Khi hệ thống giám sát tự động (ADS-B/Radar) phát hiện một tín hiệu mục tiêu xuất hiện tại ranh giới Vùng thông báo bay (FIR), cổng nhập sẽ đánh giá các tham số vận tốc và phương vị. Nếu mục tiêu có quỹ đạo tiến nhập vào phân khu kiểm soát, dữ liệu sẽ lập tức được cập nhật vào $c_t$ để thiết lập quá trình giám sát liên tục.
+    
+    \item \textbf{Cổng xuất ($o_t$):} Trích xuất dữ liệu tổng hợp để cấu thành kết quả dự báo. Căn cứ vào trạng thái của nhóm tàu bay đang hoạt động trong vùng tiếp cận, hệ thống sẽ xử lý và truyền tải số liệu dự báo lưu lượng lên Hệ thống xử lý dữ liệu bay (FDPS) hoặc Màn hình hiển thị của KSVKL (CWP), đóng vai trò thông tin tham khảo chiến lược cho giai đoạn từ 15 đến 30 phút tới.
+\end{itemize}
+
+\subsection{Giới hạn ứng dụng}
+
+Đặc thù kiến trúc LSTM đòi hỏi một cơ sở dữ liệu huấn luyện quy mô lớn. Khi áp dụng đối với các tập dữ liệu có quy mô nhỏ (từ 20-50 điểm quan trắc), mô hình dễ bộc lộ hiện tượng quá khớp (Overfitting) – tình trạng thuật toán chỉ ghi nhớ cục bộ dữ liệu huấn luyện thay vì tổng quát hóa quy luật khai thác. Ngoài ra, tính chất "Hộp đen" (Black box) của mạng nơ-ron gây cản trở trong việc diễn giải nguyên lý hình thành của kết quả dự báo.
+
+%===============================================================================
+% SECTION 6: BENCHMARK COMPARISONS
+%===============================================================================
+
+\section{Phân tích Thực chứng (Benchmark Comparisons)}
+
+\subsection{Nghiên cứu ứng dụng trong Hàng không Dân dụng}
+
+Nghiên cứu của tác giả Dursun (2023) \cite{dursun2023air} triển khai thực nghiệm tại Cảng hàng không Diyarbakir cung cấp các thông số sau:
+
+\begin{table}[htbp]
+\centering
+\caption{Hiệu năng dự báo luồng không lưu: LSTM và AR}
+\label{tab:aviation_benchmark}
+\begin{tabular}{|l|c|}
+\hline
+\textbf{Cấu trúc mô hình} & \textbf{Chỉ số RMSE} \\
+\hline
+Mô hình tự hồi quy (AR) & 219.18 \\
+Kiến trúc Stacked LSTM & \textbf{0.17} \\
+\hline
+\end{tabular}
+\end{table}
+
+\textbf{Lưu ý từ nhóm nghiên cứu:} Kết quả tích cực của mô hình LSTM trong nghiên cứu trên được thiết lập trên một cơ sở dữ liệu có quy mô lớn. Do đó, luận điểm này không mang tính đại diện và khó có thể ngoại suy trực tiếp đối với các hệ thống hạn chế về nguồn cấp dữ liệu lịch sử.
+
+\subsection{Kết quả từ các Hệ thống đánh giá quốc tế}
+
+Căn cứ vào dữ liệu từ cuộc thi phân tích định lượng M4 (2018) và M5 (2020):
+\begin{itemize}
+    \item \textbf{M4 (2018):} Các phương pháp phân tích chuỗi thời gian thống kê (ARIMA, Exponential Smoothing) duy trì mức độ ổn định và cạnh tranh cao. Các kiến trúc mạng nơ-ron phức tạp không thể hiện tính ưu việt đồng nhất.
+    \item \textbf{M5 (2020):} Các cấu trúc dự báo dựa trên Gradient Boosting (LightGBM) thiết lập vị thế dẫn đầu. Đáng chú ý, các mô hình tiếp cận thuần túy bằng LSTM ghi nhận mức hiệu suất kém khả quan hơn so với các phương pháp học máy cơ bản.
+\end{itemize}
+
+\subsection{Tổng hợp các Khuyến nghị thực chứng}
+
+\begin{table}[htbp]
+\centering
+\caption{Phân loại và đối sánh năng lực các mô hình dự báo}
+\label{tab:benchmark_summary}
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Tiêu chí kỹ thuật} & \textbf{NeuralProphet} & \textbf{ARIMA} & \textbf{LSTM} \\
+\hline
+Năng lực trên tập dữ liệu nhỏ & Tốt & Khá & Kém \\
+Năng lực trên tập dữ liệu lớn & Khá & Khá & Tốt \\
+Xử lý dữ liệu phi tuyến tính & Tốt & Kém & Tốt \\
+Định lượng độ bất định & Tốt & Kém & Khá \\
+Tính minh bạch thuật toán & Tốt & Xuất sắc & Kém \\
+Độ trễ quá trình huấn luyện & Khá & Xuất sắc & Kém \\
+Tốc độ kết xuất dự báo & Xuất sắc & Xuất sắc & Khá \\
+\hline
+\end{tabular}
+\end{table}
+
+%===============================================================================
+% SECTION 7: AVIATION APPLICATIONS
+%===============================================================================
+
+\section{Thực trạng Ứng dụng Dự báo trong Hệ thống ATM}
+
+\subsection{Yêu cầu của Hệ thống Quản lý Luồng Không lưu (ATFM)}
+
+Công tác dự báo luồng không lưu (ATFP) đối diện với các yêu cầu mang tính kỹ thuật và vận hành khắt khe:
+\begin{itemize}
+    \item Yêu cầu dự báo trong khung thời gian chiến thuật (Tactical phase - trước 5 đến 60 phút).
+    \item Năng lực định lượng rủi ro thông qua các khoảng tin cậy nhằm hỗ trợ công tác ra quyết định phối hợp (A-CDM).
+    \item Cơ chế cập nhật và đồng bộ dữ liệu theo thời gian thực (Real-time synchronization).
+\end{itemize}
+
+\subsection{Đóng góp từ các công trình nghiên cứu hiện đại}
+
+Nghiên cứu của Wang và cộng sự (2026) thông qua hệ thống \textit{AeroSense Framework} \cite{wang2026air} nhấn mạnh tầm quan trọng của việc ứng dụng mô hình hóa vi mô dựa trên dữ liệu quỹ đạo bay ADS-B. Đồng thời, công trình của Liu và cộng sự (2026) \cite{liu2026situation} khẳng định xu hướng chuyển dịch từ phân tích chuỗi thời gian đơn thuần sang mô hình hóa nhận thức tình huống tổng thể. Mặt khác, De Oliveira (2025) \cite{deoliveira2025predictive} đề xuất các cấu trúc dịch vụ dự báo nhằm gia tăng hiệu suất của không phận chiến lược.
+
+\subsection{Các tham số đầu vào (Features) chủ đạo}
+
+Dựa trên cơ sở lý thuyết, các nhóm dữ liệu cốt lõi phục vụ xây dựng mô hình ATFP bao gồm:
+\begin{enumerate}
+    \item \textbf{Lưu lượng lịch sử:} Tham số định chuẩn thiết lập mô hình cơ sở.
+    \item \textbf{Tham chiếu thời gian:} Đặc tính theo giờ, theo ngày phản ánh nhịp độ khai thác hàng không.
+    \item \textbf{Thông số khí tượng:} Yếu tố trực tiếp tác động đến năng lực tiếp thu và hành vi dẫn đường của tàu bay.
+    \item \textbf{Cấu hình không phận:} Các giới hạn liên quan đến hạ tầng kỹ thuật và quy trình quản lý.
+    \item \textbf{Lưu lượng vùng đệm (Buffer):} Tình trạng tàu bay đang tiếp cận phân khu, cung cấp dữ liệu nền tảng đánh giá nhu cầu tương lai gần.
+\end{enumerate}
+
+%===============================================================================
+% SECTION 8: MODEL SELECTION FOR AEROCAST
+%===============================================================================
+
+\section{Đề xuất Giải pháp Mô hình cho Hệ thống AeroCast VAA}
+
+\subsection{Điều kiện biên của dữ liệu đầu vào}
+
+Môi trường vận hành của dự án AeroCast bị chi phối bởi các giới hạn kỹ thuật:
+
+\begin{table}[htbp]
+\centering
+\caption{Đặc tả kỹ thuật luồng dữ liệu AeroCast}
+\label{tab:aero_characteristics}
+\begin{tabular}{|l|c|}
+\hline
+\textbf{Thông số kỹ thuật} & \textbf{Giá trị thiết lập} \\
+\hline
+Quy mô tập mẫu (Sau chuẩn hóa) & Dao động từ 20 đến 36 điểm \\
+Khung thời gian mục tiêu & 30 phút \\
+Chu kỳ cập nhật hệ thống & 5 đến 10 phút \\
+Phạm vi biến ngoại sinh & Dữ liệu thời tiết và luồng đệm tiếp cận \\
+Yêu cầu phân tích rủi ro & Bắt buộc (Tạo lập khoảng tin cậy) \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Lựa chọn cơ sở đánh giá}
+
+Căn cứ vào các giới hạn khai thác, hệ thống tiêu chí lựa chọn mô hình được thiết lập bao gồm: Năng lực xử lý dữ liệu nhỏ, khả năng cung cấp định lượng độ bất định (Uncertainty Quantification), tính minh bạch của thuật toán, hiệu năng huấn luyện mô hình và khả năng tương thích biến ngoại sinh.
+
+\subsection{Khuyến nghị giải pháp ứng dụng}
+
+Đánh giá tổng thể từ dữ liệu thực chứng cho thấy \textbf{NeuralProphet} là cấu trúc mô hình có độ tương thích cao nhất đối với các yêu cầu vận hành của hệ thống AeroCast VAA. 
+
+\textbf{Cơ sở lựa chọn:}
+\begin{enumerate}
+    \item \textbf{Độ tương thích nguồn dữ liệu hạn chế:} Kiến trúc AR-Net được tối ưu hóa chuyên biệt, duy trì hiệu suất ổn định ngay cả với tập mẫu siêu nhỏ (20 quan sát) \cite{tribe2021neuralprophet}.
+    \item \textbf{Khả năng định lượng rủi ro bẩm sinh:} Thuật toán Hồi quy phân vị (Quantile Regression) tích hợp sẵn cung cấp các biên độ dự báo tin cậy nhằm hỗ trợ công tác lập kế hoạch.
+    \item \textbf{Độ minh bạch trong giải trình:} Khả năng phân rã cấu trúc toán học giúp sinh viên dễ dàng biểu đạt và lập luận kết quả trước các Hội đồng chuyên môn.
+    \item \textbf{Tương thích tham số khai thác:} Chức năng nội suy độ trễ từ các biến ngoại sinh (Lagged regressors) đáp ứng hoàn toàn nhu cầu liên kết thông số vùng đệm (Buffer flow).
+\end{enumerate}
+
+Mô hình \textbf{ARIMA} có thể được đề xuất áp dụng song song với vai trò là mô hình đối chứng cơ sở (Baseline). Ngược lại, phương pháp \textbf{LSTM} không được nhóm nghiên cứu khuyến nghị triển khai do rủi ro phát sinh hiện tượng quá khớp (Overfitting) trên quy mô dữ liệu hẹp và bản chất thiếu minh bạch trong phân tích kết quả.
+
+%===============================================================================
+% SECTION 9: CONCLUSIONS
+%===============================================================================
+
+\section{Kết luận và Định hướng Phát triển}
+
+\subsection{Kết luận}
+
+Tài liệu tổng quan này đã triển khai phân tích và đối chiếu ba mô hình dự báo chuỗi thời gian dựa trên các chỉ số thực chứng khoa học. Kết quả nghiên cứu khẳng định mô hình NeuralProphet đã cải thiện đáng kể sai số MASE từ 8.54 xuống 0.62 \cite{tribe2021neuralprophet}, qua đó chứng minh sự dung hòa hoàn hảo giữa khả năng nội suy dữ liệu phi tuyến của mạng nơ-ron và tính ổn định, dễ diễn giải của phương pháp thống kê cổ điển.
+
+Mô hình ARIMA vẫn giữ nguyên giá trị làm thước đo đối chứng tiêu chuẩn. Tuy nhiên, kiến trúc Học sâu LSTM bộc lộ nhiều điểm hạn chế về mặt cấu trúc dữ liệu yêu cầu, do đó chưa đủ điều kiện kỹ thuật để tích hợp vào các kịch bản dự báo luồng không lưu ở quy mô dữ liệu siêu nhỏ. Nhóm nghiên cứu kiến nghị đưa thuật toán NeuralProphet làm trung tâm xử lý dữ liệu cho hệ thống AeroCast VAA trong các giai đoạn phát triển tiếp theo.
+
+\subsection{Định hướng nghiên cứu mở rộng}
+
+Nhằm nâng cao tính khả thi của đề tài, các hướng nghiên cứu kế tiếp dự kiến bao gồm:
+\begin{itemize}
+    \item Tiến hành thiết lập môi trường chạy thử nghiệm (Backtesting) trên bộ dữ liệu thực tế thu thập từ Cảng hàng không nhằm đối sánh trực tiếp hiệu suất.
+    \item Nghiên cứu triển khai phương pháp kết hợp mô hình (Ensemble learning) nhằm gia tăng độ vững chắc của kết quả dự báo.
+    \item Mở rộng phạm vi thu thập dữ liệu nhằm xác thực các đặc tính phân bổ theo mùa vụ dài hạn của mạng lưới không lưu.
+\end{itemize}
+
+%===============================================================================
+% SECTION 10: REFERENCES
+%===============================================================================
+
+\section{Tài liệu Tham khảo}
+
+\begin{thebibliography}{99}
+
+\bibitem{tribe2021neuralprophet}
+Tribe, O., Hewamalage, H., Pilyugina, P., Laptev, N., Bergmeir, C., \& Rajagopal, R. (2021).
+\newblock NeuralProphet: Explainable Forecasting at Scale.
+\newblock \textit{arXiv:2111.15397}. Facebook Core Data Science.
+
+\bibitem{siami2019comparative}
+Siami-Namimi, S., Tavakoli, N., \& Namin, A. S. (2019).
+\newblock A Comparative Analysis of Forecasting Financial Time Series Using ARIMA, LSTM, and BiLSTM.
+\newblock \textit{arXiv:1903.03803}.
+
+\bibitem{zhu2017deep}
+Zhu, L., \& Laptev, N. (2017).
+\newblock Deep and Confident Prediction for Time Series at Uber.
+\newblock \textit{2017 IEEE International Conference on Data Mining Workshops (ICDMW)}.
+
+\bibitem{dursun2023air}
+Dursun, O. O. (2023).
+\newblock Air-traffic flow prediction with deep learning: A case study for Diyarbakir airport.
+\newblock \textit{Journal of Aviation}, 7(1), 45-58.
+
+\bibitem{wang2026air}
+Wang, B., Liu, A., Zhao, J., et al. (2026).
+\newblock Unlocking air traffic flow prediction through microscopic aircraft-state modeling.
+\newblock \textit{arXiv} (AeroSense Framework).
+
+\bibitem{liu2026situation}
+Liu, A., Zhao, J., Jiang, G., et al. (2026).
+\newblock From Time Series to State: Situation-Aware Modeling for Air Traffic Flow Prediction.
+\newblock \textit{IEEE Transactions on Intelligent Transportation Systems}.
+
+\bibitem{deoliveira2025predictive}
+De Oliveira, I. R., Ayhan, S., Gurtner, G., et al. (2025).
+\newblock A Predictive Services Architecture for Efficient Airspace Operations.
+\newblock \textit{IEEE/AIAA Digital Avionics Systems Conference (DASC)}.
+
+\bibitem{m5competition}
+M5 Competition (2020).
+\newblock Walmart Sales Forecasting -- Accuracy Competition.
+\newblock \textit{Kaggle}. \url{https://www.kaggle.com/c/m5-forecasting-accuracy}
+
+\end{thebibliography}
+
+\end{document}
