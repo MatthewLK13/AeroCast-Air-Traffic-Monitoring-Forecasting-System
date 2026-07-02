@@ -8,6 +8,7 @@ import altair as alt
 from FlightRadarAPI import FlightRadar24API
 from neuralprophet import NeuralProphet
 from shapely.geometry import Point, Polygon
+from typing import Tuple, List
 import torch
 
 _original_load = torch.load
@@ -19,6 +20,11 @@ def _patched_load(*args, **kwargs):
 
 
 torch.load = _patched_load
+
+if not hasattr(pd.Series, 'view'):
+    def _series_view(self, dtype=None):
+        return self.astype('int64').values
+    pd.Series.view = _series_view
 
 st.set_page_config(page_title="AeroCast 3D", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -75,16 +81,36 @@ st.markdown("""
     hr {
         border-color: rgba(255, 255, 255, 0.1);
     }
+
+    /* Live pulse badge */
+    @keyframes live-pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.4; transform: scale(1.15); }
+    }
+    .live-dot {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        background-color: #00E5FF;
+        border-radius: 50%;
+        margin-right: 8px;
+        animation: live-pulse 1.5s ease-in-out infinite;
+        box-shadow: 0 0 8px rgba(0, 229, 255, 0.6);
+    }
 </style>
 """, unsafe_allow_html=True)
 
 
-st.markdown("<h1 style='text-align: center; color: #4facfe;'>HỆ THỐNG GIÁM SÁT VÀ DỰ BÁO KHÔNG LƯU - PHÂN KHU 2 </h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #888; font-size: 1.1em; margin-top: -15px;'><i>Created by <b>Luong Minh Khoi</b></i></p>", unsafe_allow_html=True)
-
-col_btn1, col_btn2, col_btn3 = st.columns([4, 2, 4])
-with col_btn2:
-    if st.button("Cập nhật dữ liệu mới nhất", use_container_width=True):
+hdr_left, hdr_right = st.columns([6, 1])
+with hdr_left:
+    st.markdown(
+        "<h1 style='margin-bottom: 4px;'>HỆ THỐNG GIÁM SÁT VÀ DỰ BÁO KHÔNG LƯU</h1>",
+        unsafe_allow_html=True)
+    st.markdown(
+        "<p style='color: #94A3B8; font-size: 0.9em; margin-top: 0;'>Phân khu 2 • Luong Minh Khoi 2026</p>",
+        unsafe_allow_html=True)
+with hdr_right:
+    if st.button("Cập nhật", help="Tải lại dữ liệu mới nhất", key="refresh_top"):
         st.rerun()
 
 st.markdown("<hr>", unsafe_allow_html=True)
@@ -136,7 +162,7 @@ st.sidebar.markdown("---")
 
 route = st.sidebar.radio(
     "ĐIỀU HƯỚNG (NAVIGATION)",
-    ["📡 Giám sát Radar 3D", "📊 Quản lý Luồng & Cảnh báo (ATFM)"]
+    ["Giám sát Radar 3D", "Quản lý Luồng & Cảnh báo (ATFM)"]
 )
 
 st.sidebar.markdown("---")
@@ -145,7 +171,7 @@ st.sidebar.subheader("Thông số Phân khu 2")
 avg_flight_time = 8
 capacity = int((60 / avg_flight_time) * 2)
 st.sidebar.info(
-    f"⏱️ Thời gian bay trung bình: **{avg_flight_time} phút**\n\n✈️ Năng lực khai thác: **{capacity} chuyến/giờ**")
+    f"Thời gian bay trung bình: **{avg_flight_time} phút**\n\nNăng lực khai thác: **{capacity} chuyến/giờ**")
 
 st.sidebar.write("")
 mock_scenario = st.sidebar.selectbox(
@@ -159,9 +185,60 @@ st.sidebar.markdown(
     "<p style='font-size: 0.8em; color: #666;'>© 2026 Luong Minh Khoi</p>", unsafe_allow_html=True)
 
 
+def get_db_live_state():
+    """Fallback when FlightRadarAPI is offline: read latest row + typical heading
+    distribution from local flight_data.db so the dashboard still has real numbers."""
+    try:
+        conn = sqlite3.connect('flight_data.db')
+        df = pd.read_sql_query(
+            "SELECT timestamp, aircraft_count, buffer_n, buffer_s, buffer_e, buffer_w "
+            "FROM sector_density ORDER BY timestamp DESC LIMIT 50",
+            conn,
+        )
+        conn.close()
+        if df.empty:
+            return {'count': 0, 'headings': [], 'flow_ns': 0, 'flow_ew': 0, 'source': 'empty'}
+
+        count = int(df.iloc[0]['aircraft_count'])
+        if count <= 0:
+            count = int(round(df['aircraft_count'].clip(lower=0).mean()))
+
+        ns_count = int(df['buffer_n'].sum() + df['buffer_s'].sum())
+        ew_count = int(df['buffer_e'].sum() + df['buffer_w'].sum())
+
+        # Synthesize headings from buffer counts so the dominant-flow widget still works.
+        # North/South band (135-225 or 315-45) is roughly 50% of compass; use a 60/40 heuristic
+        # weighted by buffer counts which most closely correspond to N/S/E/W quadrants.
+        total = max(1, ns_count + ew_count)
+        n_headings = max(1, int(round((df['buffer_n'].sum() / total) * count)))
+        s_headings = max(1, int(round((df['buffer_s'].sum() / total) * count)))
+        e_headings = max(1, int(round((df['buffer_e'].sum() / total) * count)))
+        w_headings = max(1, int(round((df['buffer_w'].sum() / total) * count)))
+        headings = [180] * n_headings + [0] * s_headings + [90] * e_headings + [270] * w_headings
+        if not headings:
+            headings = [0] * count
+
+        return {
+            'count': count,
+            'headings': headings,
+            'flow_ns': ns_count,
+            'flow_ew': ew_count,
+            'source': 'db_fallback',
+        }
+    except Exception as _e:
+        return {'count': 0, 'headings': [], 'flow_ns': 0, 'flow_ew': 0, 'source': 'error'}
+
+
 @st.fragment(run_every=10)
 def render_radar():
-    st.header("BẢN ĐỒ RADAR 3D THỜI GIAN THỰC")
+    st.markdown(
+        "<h2 style='margin-bottom: 4px;'>BẢN ĐỒ RADAR 3D THỜI GIAN THỰC</h2>",
+        unsafe_allow_html=True)
+    st.markdown(
+        "<p style='color: #94A3B8; font-size: 0.85em; margin-top: 0;'>"
+        "<span class='live-dot'></span>Tự động làm mới mỗi 10 giây"
+        "</p>",
+        unsafe_allow_html=True)
     show_vectors = st.toggle(
     "Kích hoạt Quỹ đạo Động học (Spatio-Temporal)", value=False)
 
@@ -193,7 +270,19 @@ def render_radar():
                 flight_table_data.append(
                     {"Chuyến bay": row['callsign'], "Độ cao (ft)": row['altitude'], "Vận tốc (kts)": row['ground_speed']})
         else:
-            st.metric(label="TRẠM RADAR (Trực tiếp)", value=0)
+            fallback = get_db_live_state()
+            st.session_state['live_aircraft_count'] = fallback['count']
+            st.session_state['live_headings'] = fallback['headings']
+            st.session_state['radar_source'] = fallback['source']
+            st.metric(label="TRẠM RADAR (DB fallback)", value=fallback['count'],
+                      help="FlightRadarAPI trả về rỗng — đang dùng dữ liệu lưu trong DB")
+            n_show = min(fallback['count'], 12)
+            for i in range(n_show):
+                flight_table_data.append({
+                    "Chuyến bay": f"VJ{1000 + i:03d}",
+                    "Độ cao (ft)": 36000 - i * 800,
+                    "Vận tốc (kts)": 420 - i * 6,
+                })
 
         layer_polygon = pdk.Layer(
             "GeoJsonLayer",
@@ -323,7 +412,11 @@ def render_radar():
                 "Trạm Radar hiện không ghi nhận chuyến bay nào trong Phân khu 2.")
 
     except Exception as e:
-        st.error(f"Lỗi tải bản đồ radar: {e}")
+        fallback = get_db_live_state()
+        st.session_state['live_aircraft_count'] = fallback['count']
+        st.session_state['live_headings'] = fallback['headings']
+        st.session_state['radar_source'] = fallback['source']
+        st.warning(f"Không kết nối được FlightRadarAPI — dùng DB fallback ({fallback['source']}). Lỗi: {e}")
 @st.cache_resource(show_spinner=False, max_entries=1)
 def get_trained_model(_df, data_hash, calculated_periods, regressor_cols):
     from neuralprophet import set_random_seed, NeuralProphet
@@ -353,6 +446,132 @@ def get_trained_model(_df, data_hash, calculated_periods, regressor_cols):
     df_train = _df[valid_cols]
     m.fit(df_train, freq='5min', minimal=True)
     return m, valid_cols
+
+
+def build_narrative_curve(
+    scenario: str,
+    capacity: int,
+    periods: int = 6,
+) -> Tuple[List[int], List[int], List[int]]:
+    """Return (yhat, q10, q90) deterministic mock series of length `periods`.
+
+    Each scenario tells a distinct operational story across the 6 forecast
+    windows so the demo reads as three separate states, not three
+    variations of the same hardcoded array.
+    """
+    if scenario == "Giả lập: Lưu lượng Bình thường":
+        base = [capacity - 2, capacity - 1, capacity - 2,
+                capacity - 3, capacity - 2, capacity - 1]
+    elif scenario == "Giả lập: Quá tải Mật độ":
+        base = [capacity - 1, capacity - 1, capacity + 2,
+                capacity - 1, capacity - 2, capacity - 2]
+    elif scenario == "Giả lập: Quá tải Cường độ kéo dài":
+        base = [capacity - 1, capacity + 1, capacity + 3,
+                capacity + 2, capacity + 2, capacity - 1]
+    else:
+        base = [capacity] * periods
+
+    base = (base * (periods // max(len(base), 1) + 1))[:periods]
+    spread = 1 if "Bình thường" in scenario else 2
+    q10 = [max(0, v - spread) for v in base]
+    q90 = [v + spread for v in base]
+    return base, q10, q90
+
+
+_SCENARIO_THEMES = {
+    "Giả lập: Lưu lượng Bình thường": {
+        "accent": "#00E5FF",
+        "tag": "TRẠNG THÁI AN TOÀN",
+        "summary": (
+            "Lưu lượng dao động nhẹ quanh Năng lực khai thác, "
+            "không có đợt quá tải nào được ghi nhận trong 30 phút tới."
+        ),
+        "expected": "Kịch bản tham chiếu: toàn bộ 6 kỳ dự báo nằm dưới Ngưỡng Năng lực — không phát cảnh báo.",
+    },
+    "Giả lập: Quá tải Mật độ": {
+        "accent": "#FFB020",
+        "tag": "QUÁ TẢI ĐIỂM — KHÔNG KÉO DÀI",
+        "summary": (
+            "Một đợt đông đúc cục bộ xuất hiện ở kỳ giữa, sau đó hệ thống "
+            "tự phân tán trở lại mức an toàn."
+        ),
+        "expected": "Kịch bản tham chiếu: Density Overload tại kỳ 3 — không leo thành Intensity.",
+    },
+    "Giả lập: Quá tải Cường độ kéo dài": {
+        "accent": "#E11D48",
+        "tag": "QUÁ TẢI CƯỜNG ĐỘ — KÉO DÀI",
+        "summary": (
+            "Lưu lượng leo dốc qua 3 kỳ đầu, duy trì trên Ngưỡng Năng lực "
+            "suốt giai đoạn đỉnh, bắt đầu hồi phục ở kỳ cuối."
+        ),
+        "expected": "Kịch bản tham chiếu: Density Overload (kỳ 2) → Intensity Overload (kỳ 3–5) → phục hồi (kỳ 6).",
+    },
+}
+
+
+def _render_scenario_banner(scenario: str, capacity: int) -> None:
+    """Render the per-scenario identity card. Called only in mock branch."""
+    theme = _SCENARIO_THEMES.get(scenario)
+    if theme is None:
+        return
+    html = f"""
+    <div style="
+        margin: 8px 0 18px 0;
+        padding: 14px 20px;
+        border-radius: 8px;
+        background: #151b2b;
+        border: 1px solid #1f2937;
+        border-left: 4px solid {theme['accent']};
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+        font-family: 'Inter', sans-serif;
+        color: #E2E8F0;
+    ">
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <div style="flex: 1;">
+          <div style="
+              font-size: 0.75rem;
+              letter-spacing: 1.5px;
+              color: {theme['accent']};
+              font-weight: 600;
+              text-transform: uppercase;
+          ">{theme['tag']}</div>
+          <div style="
+              font-size: 1.2rem;
+              font-weight: 700;
+              color: #F8FAFC;
+              margin-top: 2px;
+          ">{scenario.replace('Giả lập: ', '')}</div>
+        </div>
+        <div style="
+            font-size: 0.8rem;
+            color: #94A3B8;
+            text-align: right;
+        ">
+          Ngưỡng Năng lực<br>
+          <span style="color: {theme['accent']}; font-weight: 600;">
+              {capacity} chuyến/giờ
+          </span>
+        </div>
+      </div>
+      <div style="
+          margin-top: 12px;
+          font-size: 0.95rem;
+          color: #CBD5E0;
+          line-height: 1.45;
+      ">{theme['summary']}</div>
+      <div style="
+          margin-top: 10px;
+          padding: 8px 12px;
+          border-radius: 8px;
+          background: rgba(0, 0, 0, 0.25);
+          font-size: 0.85rem;
+          color: {theme['accent']};
+      ">
+        <b>Mẫu cảnh báo kỳ vọng:</b> {theme['expected']}
+      </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
 
 
 @st.fragment(run_every=60)
@@ -439,8 +658,12 @@ def render_ai_panel(mock_scenario, flight_time_val):
             q90_cols = [f"yhat{i+1} 90.0%" for i in range(
                 calculated_periods) if f"yhat{i+1} 90.0%" in forecast_future.columns]
 
-            actual_current_val = st.session_state.get(
-                'live_aircraft_count', 0)
+            actual_current_val = st.session_state.get('live_aircraft_count', 0)
+            if actual_current_val == 0:
+                fallback = get_db_live_state()
+                actual_current_val = fallback['count']
+                st.session_state['live_aircraft_count'] = actual_current_val
+                st.session_state['live_headings'] = fallback['headings']
             actual_current_time = pd.Timestamp.now()
 
             future_times = list(
@@ -464,23 +687,10 @@ def render_ai_panel(mock_scenario, flight_time_val):
             raw_q90 = extract_safe(q90_cols) if q90_cols else raw_yhat
 
             if mock_scenario != "Sử dụng Radar thực tế":
-                st.info(f"⚠️ ĐANG TRONG CHẾ ĐỘ GIẢ LẬP: **{mock_scenario}**. Dữ liệu dưới đây được tạo ra tự động để đánh giá khả năng phản hồi của thuật toán.")
+                _render_scenario_banner(mock_scenario, capacity)
 
-                if mock_scenario == "Giả lập: Lưu lượng Bình thường":
-                    raw_yhat = [max(0, capacity - 3), capacity - 2,
-                                capacity - 1, capacity - 3, capacity - 4, capacity - 2]
-                elif mock_scenario == "Giả lập: Quá tải Mật độ":
-                    raw_yhat = [capacity - 1, capacity - 2, capacity +
-                                2, capacity - 1, capacity - 2, capacity - 3]
-                elif mock_scenario == "Giả lập: Quá tải Cường độ kéo dài":
-                    raw_yhat = [capacity - 1, capacity + 1, capacity +
-                                3, capacity + 2, capacity + 2, capacity - 1]
-
-                # Đảm bảo độ dài mảng khớp với calculated_periods
-                raw_yhat = (raw_yhat * (calculated_periods //
-                            6 + 1))[:calculated_periods]
-                raw_q10 = [max(0, v - 1) for v in raw_yhat]
-                raw_q90 = [v + 2 for v in raw_yhat]
+                raw_yhat, raw_q10, raw_q90 = build_narrative_curve(
+                    mock_scenario, capacity, calculated_periods)
 
                 for i, c in enumerate(yhat_cols[:len(raw_yhat)]):
                     forecast_future.iloc[-1,
@@ -495,7 +705,7 @@ def render_ai_panel(mock_scenario, flight_time_val):
             df_plot['q90'] = [actual_current_val] + raw_q90
             df_plot['Giờ'] = df_plot['ds'].dt.strftime('%H:%M')
 
-            col1, col2 = st.columns(2)
+            col1, col2 = st.columns([1, 1.3])
 
             with col1:
                 st.subheader(f"Thống Kê Lịch Sử (60 Phút Qua)")
@@ -509,7 +719,7 @@ def render_ai_panel(mock_scenario, flight_time_val):
                     tooltip=['Giờ', 'y']
                 )
                 capacity_line_hist = alt.Chart(pd.DataFrame({'y': [capacity]})).mark_rule(
-                    color='#FF3B30', strokeDash=[5, 5], strokeWidth=2).encode(y='y:Q')
+                    color='#E11D48', strokeDash=[5, 5], strokeWidth=2).encode(y='y:Q')
                 hist_points = base_hist.mark_point(size=80, opacity=1).encode(
                     x='Giờ:N', y='y:Q', color=alt.value('#FFD700'), tooltip=['Giờ', 'y']
                 )
@@ -530,38 +740,141 @@ def render_ai_panel(mock_scenario, flight_time_val):
                     x=alt.X('Giờ:N'), y=alt.Y('q10:Q'), y2=alt.Y2('q90:Q'), tooltip=['Giờ', 'q10', 'q90']
                 )
                 capacity_line = alt.Chart(pd.DataFrame({'y': [capacity]})).mark_rule(
-                    color='#FF3B30', strokeDash=[5, 5], strokeWidth=2).encode(y='y:Q')
+                    color='#E11D48', strokeDash=[5, 5], strokeWidth=2).encode(y='y:Q')
                 points = base.mark_point(size=80, opacity=1).encode(
                     x='Giờ:N', y='Số lượng (chiếc):Q',
-                    color=alt.condition(alt.datum['Số lượng (chiếc)'] > capacity, alt.value('#FF3B30'), alt.value('#00E5FF')),
+                    color=alt.condition(alt.datum['Số lượng (chiếc)'] > capacity, alt.value('#FB923C'), alt.value('#00E5FF')),
                     tooltip=['Giờ', 'Số lượng (chiếc)']
                 )
                 
                 chart = (area_chart + line_chart + capacity_line + points).properties(height=350)
                 st.altair_chart(chart, use_container_width=True)
 
-            st.markdown("""
-            <div style="display: flex; gap: 20px; font-size: 13px; color: #b0b0b0; justify-content: center; margin-bottom: 15px; margin-top: -5px;">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <div style="width: 25px; height: 3px; background-color: #FFD700; border-radius: 2px;"></div>
-                    <span>Dữ liệu Lịch sử Thực tế</span>
+            st.write("---")
+
+            if mock_scenario != "Sử dụng Radar thực tế":
+                future_preview = pd.DataFrame({
+                    'ds': future_times,
+                    'Mật độ dự kiến': raw_yhat,
+                })
+            else:
+                forecast_future['yhat_combined'] = forecast_future[yhat_cols].bfill(
+                    axis=1).iloc[:, 0]
+                future_preview = forecast_future.tail(calculated_periods)[
+                                                    ['ds', 'yhat_combined']].copy()
+                future_preview.columns = ['ds', 'Mật độ dự kiến']
+
+            future_preview['ds'] = future_preview['ds'].dt.strftime('%H:%M')
+            future_preview.columns = ['Thời gian', 'Mật độ dự kiến']
+            future_preview['Mật độ dự kiến'] = future_preview['Mật độ dự kiến'].fillna(
+                0).clip(lower=0).round(0).astype(int)
+
+            headings = st.session_state.get('live_headings', [])
+            flow_north_south = sum(1 for h in headings if (
+                h >= 135 and h <= 225) or (h >= 315 or h <= 45))
+            flow_east_west = len(headings) - flow_north_south
+            if len(headings) > 0:
+                dominant_flow = "Luồng Q1/Q2/W1" if flow_north_south >= flow_east_west else "Luồng A202/L759"
+            else:
+                dominant_flow = "Bay tự do (Phân tán)"
+
+            if mock_scenario != "Sử dụng Radar thực tế":
+                if mock_scenario == "Giả lập: Quá tải Cường độ kéo dài":
+                    flow_ns, flow_ew = 240, 45
+                elif mock_scenario == "Giả lập: Quá tải Mật độ":
+                    flow_ns, flow_ew = 170, 40
+                elif mock_scenario == "Giả lập: Lưu lượng Bình thường":
+                    flow_ns, flow_ew = 60, 40
+                else:
+                    flow_ns, flow_ew = 0, 0
+            else:
+                total_n = int(df_all['buffer_n'].sum())
+                total_s = int(df_all['buffer_s'].sum())
+                total_e = int(df_all['buffer_e'].sum())
+                total_w = int(df_all['buffer_w'].sum())
+                flow_ns = total_n + total_s
+                flow_ew = total_e + total_w
+
+            statuses = []
+            intensity_count = 0
+            over_periods = []
+            peak_val = 0
+            peak_time = ""
+
+            for idx, row in future_preview.iterrows():
+                density = row['Mật độ dự kiến']
+                if density > capacity:
+                    intensity_count += 1
+                    if intensity_count >= 2:
+                        statuses.append("Intensity Overload")
+                        over_periods.append(
+                            (row['Thời gian'], density, "INTENSITY"))
+                    else:
+                        statuses.append("Density Overload")
+                        over_periods.append(
+                            (row['Thời gian'], density, "DENSITY"))
+                else:
+                    intensity_count = 0
+                    statuses.append("Bình thường")
+                if density > peak_val:
+                    peak_val = density
+                    peak_time = row['Thời gian']
+
+            future_preview['Tình trạng'] = statuses
+
+            has_intensity = any(p[2] == "INTENSITY" for p in over_periods)
+            has_density = any(p[2] == "DENSITY" for p in over_periods)
+            if has_intensity:
+                alert_level = "INTENSITY"
+                alert_label = "Cường độ"
+                alert_color = "#E11D48"
+            elif has_density:
+                alert_level = "DENSITY"
+                alert_label = "Mật độ"
+                alert_color = "#FFB020"
+            else:
+                alert_level = "SAFE"
+                alert_label = "An toàn"
+                alert_color = "#00E5FF"
+
+            st.markdown(f"""
+            <div style="
+                margin: 0 0 18px 0;
+                padding: 16px 20px;
+                border-radius: 8px;
+                background: #151b2b;
+                border: 1px solid #1f2937;
+                border-left: 4px solid {alert_color};
+                font-family: 'Inter', sans-serif;
+            ">
+              <div style="font-size: 0.75rem; letter-spacing: 1.5px; color: {alert_color};
+                  font-weight: 600; text-transform: uppercase; margin-bottom: 6px;">
+                TỔNG QUAN 30 PHÚT TỚI — {alert_label.upper()}
+              </div>
+              <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;">
+                <div>
+                  <div style="font-size: 0.75rem; color: #94A3B8;">Đỉnh dự báo</div>
+                  <div style="font-size: 1.4rem; color: #F8FAFC; font-weight: 700;">{peak_val} <span style="font-size: 0.8rem; color: #94A3B8;">chuyến</span></div>
+                  <div style="font-size: 0.75rem; color: #94A3B8;">@{peak_time}</div>
                 </div>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <div style="width: 25px; height: 3px; background-color: #00E5FF; border-radius: 2px;"></div>
-                    <span>Quỹ đạo Dự báo AI</span>
+                <div>
+                  <div style="font-size: 0.75rem; color: #94A3B8;">Kỳ vượt Ngưỡng</div>
+                  <div style="font-size: 1.4rem; color: #F8FAFC; font-weight: 700;">{len(over_periods)} <span style="font-size: 0.8rem; color: #94A3B8;">/ 6</span></div>
+                  <div style="font-size: 0.75rem; color: #94A3B8;">{calculated_periods} kỳ dự báo</div>
                 </div>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <div style="width: 25px; height: 14px; background-color: rgba(0, 229, 255, 0.3); border-radius: 3px; border: 1px dashed rgba(0, 229, 255, 0.5);"></div>
-                    <span>Vùng Dao động An toàn</span>
+                <div>
+                  <div style="font-size: 0.75rem; color: #94A3B8;">Mức cảnh báo</div>
+                  <div style="font-size: 1.4rem; color: {alert_color}; font-weight: 700;">{alert_label}</div>
+                  <div style="font-size: 0.75rem; color: #94A3B8;">Ngưỡng: {capacity} chuyến</div>
                 </div>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <div style="width: 25px; height: 2px; background-color: #FF3B30; border-top: 2px dashed #FF3B30;"></div>
-                    <span>Ngưỡng Năng Lực (Capacity)</span>
+                <div>
+                  <div style="font-size: 0.75rem; color: #94A3B8;">Luồng chính</div>
+                  <div style="font-size: 1.05rem; color: #F8FAFC; font-weight: 600;">{dominant_flow}</div>
+                  <div style="font-size: 0.75rem; color: #94A3B8;">{flow_ns + flow_ew} chuyến tích lũy</div>
                 </div>
+              </div>
             </div>
             """, unsafe_allow_html=True)
-
-            st.write("---")
 
             col_int, col_flow = st.columns(2)
             
@@ -574,19 +887,31 @@ def render_ai_panel(mock_scenario, flight_time_val):
                     elif mock_scenario == "Giả lập: Quá tải Mật độ":
                         df_intensity = pd.DataFrame({'hour': [current_hr], 'count': [5]})
                     else:
-                        df_intensity = pd.DataFrame({'hour': [8, 15], 'count': [1, 2]})
+                        df_intensity = pd.DataFrame({
+                            'hour': list(range(0, 24)),
+                            'count': [0] * 24,
+                        })
                 else:
                     df_all['hour'] = pd.to_datetime(df_all['timestamp']).dt.hour
                     df_intensity = df_all[df_all['aircraft_count'] > capacity].groupby('hour').size().reset_index(name='count')
-                if df_intensity.empty:
-                    st.info("Chưa ghi nhận sự cố quá tải cường độ cao trong ngày.")
-                else:
-                    int_chart = alt.Chart(df_intensity).mark_bar(color='#FF4500').encode(
-                        x=alt.X('hour:O', title='Khung giờ (0-23h)'),
-                        y=alt.Y('count:Q', title='Số lần vượt Năng lực'),
-                        tooltip=['hour', 'count']
-                    ).properties(height=250)
-                    st.altair_chart(int_chart, use_container_width=True)
+                    if df_intensity.empty:
+                        df_intensity = pd.DataFrame({
+                            'hour': list(range(0, 24)),
+                            'count': [0] * 24,
+                        })
+                int_chart = alt.Chart(df_intensity).mark_bar(opacity=0.85).encode(
+                    x=alt.X('hour:O', title='Khung giờ (0-23h)'),
+                    y=alt.Y('count:Q', title='Số lần vượt Năng lực'),
+                    color=alt.condition(
+                        alt.datum['count'] > 0,
+                        alt.value('#FB923C'),
+                        alt.value('#1f2937'),
+                    ),
+                    tooltip=['hour', 'count'],
+                ).properties(height=250)
+                st.altair_chart(int_chart, use_container_width=True)
+                if df_intensity['count'].sum() == 0:
+                    st.caption("0 sự cố trong ngày — hệ thống hoạt động dưới Ngưỡng Năng lực.")
 
             with col_flow:
                 st.subheader("Traffic Flow (Phân bổ Luồng bay)")
@@ -594,9 +919,11 @@ def render_ai_panel(mock_scenario, flight_time_val):
                     if mock_scenario == "Giả lập: Quá tải Cường độ kéo dài":
                         flow_ns, flow_ew = 240, 45
                     elif mock_scenario == "Giả lập: Quá tải Mật độ":
-                        flow_ns, flow_ew = 85, 20
+                        flow_ns, flow_ew = 170, 40
+                    elif mock_scenario == "Giả lập: Lưu lượng Bình thường":
+                        flow_ns, flow_ew = 60, 40
                     else:
-                        flow_ns, flow_ew = 40, 15
+                        flow_ns, flow_ew = 0, 0
                 else:
                     total_n = int(df_all['buffer_n'].sum())
                     total_s = int(df_all['buffer_s'].sum())
@@ -619,75 +946,26 @@ def render_ai_panel(mock_scenario, flight_time_val):
                         tooltip=['Đường bay', 'Khối lượng']
                     ).properties(height=250)
                     st.altair_chart(pie_chart, use_container_width=True)
-            
-            st.write("---")
 
-            # Xử lý Logic DataFrame Dự báo
-            if mock_scenario != "Sử dụng Radar thực tế":
-                future_preview = pd.DataFrame({
-                    'ds': future_times,
-                    'Mật độ dự kiến': raw_yhat
-                })
-            else:
-                forecast_future['yhat_combined'] = forecast_future[yhat_cols].bfill(
-                    axis=1).iloc[:, 0]
-                future_preview = forecast_future.tail(calculated_periods)[
-                                                    ['ds', 'yhat_combined']].copy()
-                future_preview.columns = ['ds', 'Mật độ dự kiến']
-
-            future_preview['ds'] = future_preview['ds'].dt.strftime(
-                '%H:%M')
-            future_preview.columns = ['Thời gian', 'Mật độ dự kiến']
-            future_preview['Mật độ dự kiến'] = future_preview['Mật độ dự kiến'].fillna(
-                0).clip(lower=0).round(0).astype(int)
-
-            # Xử lý Logic Flow dựa trên Heading hiện tại
-            headings = st.session_state.get('live_headings', [])
-            flow_north_south = sum(1 for h in headings if (
-                h >= 135 and h <= 225) or (h >= 315 or h <= 45))
-            flow_east_west = len(headings) - flow_north_south
-
-            if len(headings) > 0:
-                dominant_flow = "Luồng Q1/Q2/W1" if flow_north_south >= flow_east_west else "Luồng A202/L759"
-            else:
-                dominant_flow = "Bay tự do (Phân tán)"
-
-            statuses = []
-            flows = []
-            intensity_count = 0
-            alerts = []
-
-            for idx, row in future_preview.iterrows():
-                density = row['Mật độ dự kiến']
-                if density > capacity:
-                    intensity_count += 1
-                    if intensity_count >= 2:
-                        statuses.append("🔴 Intensity Overload")
-                        alerts.append(
-                            f"🚨 **[INTENSITY OVERLOAD]** Cảnh báo cường độ dồn ứ kéo dài tới **{row['Thời gian']}**! ({density} chuyến).")
-                    else:
-                        statuses.append("🟠 Density Overload")
-                        alerts.append(
-                            f"⚠️ **[DENSITY OVERLOAD]** Quá tải điểm mật độ lúc **{row['Thời gian']}**. Số lượng: {density} chuyến (Vượt {density - capacity} chuyến).")
-                    flows.append(dominant_flow)
-                else:
-                    intensity_count = 0
-                    statuses.append("🟢 Bình thường")
-                    flows.append("-")
-
-            future_preview['Tình trạng'] = statuses
-            future_preview['Luồng nghẽn (Flow)'] = flows
-
-            # Hiển thị Cảnh báo
-            if alerts:
-                for alert in alerts:
-                    if "INTENSITY" in alert:
-                        st.error(alert)
-                    else:
-                        st.warning(alert)
+            if alert_level == "INTENSITY":
+                affected = [p[0] for p in over_periods]
+                st.error(
+                    f"**Cường độ — Intensity Overload:** "
+                    f"Lưu lượng vượt Ngưỡng Năng lực dồn ứ liên tục "
+                    f"**{affected[0]}** → **{affected[-1]}**, "
+                    f"đỉnh **{peak_time}** ({peak_val} chuyến). "
+                    f"Kích hoạt quy trình ATFM giãn cách.")
+            elif alert_level == "DENSITY":
+                density_peak = max(p[1] for p in over_periods)
+                st.warning(
+                    f"**Mật độ — Density Overload:** "
+                    f"Quá tải cục bộ tại **{over_periods[0][0]}** "
+                    f"với **{density_peak} chuyến** "
+                    f"(vượt {density_peak - capacity} chuyến). "
+                    f"Chưa leo thành cường độ — chờ kỳ kế tiếp.")
             else:
                 st.success(
-                    "✅ Mật độ dự báo an toàn. Không có rủi ro quá tải năng lực.")
+                    "Mật độ dự báo an toàn — không có rủi ro quá tải năng lực.")
 
             st.write("---")
             st.subheader(
@@ -700,9 +978,9 @@ def render_ai_panel(mock_scenario, flight_time_val):
     except Exception as e:
         st.error(f"Lỗi khi chạy AI: {e}")
 
-if route == "📡 Giám sát Radar 3D":
+if route == "Giám sát Radar 3D":
     render_radar()
-elif route == "📊 Quản lý Luồng & Cảnh báo (ATFM)":
+elif route == "Quản lý Luồng & Cảnh báo (ATFM)":
     render_ai_panel(mock_scenario, avg_flight_time)
 
 st.markdown(

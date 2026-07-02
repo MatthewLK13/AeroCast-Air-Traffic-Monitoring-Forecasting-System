@@ -73,6 +73,10 @@ def fetch_and_save_data(conn):
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         valid_aircraft_count = 0
         buffer_aircraft_count = 0
+        buffer_n = 0
+        buffer_s = 0
+        buffer_e = 0
+        buffer_w = 0
 
         precipitation = 0.0
         wind_speed = 0.0
@@ -108,10 +112,6 @@ def fetch_and_save_data(conn):
             raw_buffer_count = len(joined_buffer)
 
             inbound_threat_count = 0
-            buffer_n = 0
-            buffer_s = 0
-            buffer_e = 0
-            buffer_w = 0
 
             cx, cy = core_geom.centroid.x, core_geom.centroid.y
 
@@ -147,6 +147,8 @@ def fetch_and_save_data(conn):
                     else:
                         if dlon > 0: buffer_e += 1
                         else: buffer_w += 1
+
+            buffer_aircraft_count = inbound_threat_count
 
         cursor = conn.cursor()
         cursor.execute("INSERT INTO sector_density (timestamp, aircraft_count, precipitation, wind_speed, cloud_cover, visibility, buffer_count, buffer_n, buffer_s, buffer_e, buffer_w) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
