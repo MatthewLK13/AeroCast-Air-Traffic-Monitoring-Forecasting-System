@@ -495,7 +495,7 @@ _SCENARIO_THEMES = {
             "Một đợt đông đúc cục bộ xuất hiện ở kỳ giữa, sau đó hệ thống "
             "tự phân tán trở lại mức an toàn."
         ),
-        "expected": "Kịch bản tham chiếu: Density Overload tại kỳ 3 — không leo thành Intensity.",
+        "expected": "Kịch bản tham chiếu: Quá tải tại kỳ 3 — hệ thống tự phân tán.",
     },
     "Giả lập: Quá tải Cường độ kéo dài": {
         "accent": "#E11D48",
@@ -504,7 +504,7 @@ _SCENARIO_THEMES = {
             "Lưu lượng leo dốc qua 3 kỳ đầu, duy trì trên Ngưỡng Năng lực "
             "suốt giai đoạn đỉnh, bắt đầu hồi phục ở kỳ cuối."
         ),
-        "expected": "Kịch bản tham chiếu: Density Overload (kỳ 2) → Intensity Overload (kỳ 3–5) → phục hồi (kỳ 6).",
+        "expected": "Kịch bản tham chiếu: Quá tải kỳ 2 → kéo dài kỳ 3–5 → phục hồi kỳ 6.",
     },
 }
 
@@ -796,7 +796,6 @@ def render_ai_panel(mock_scenario, flight_time_val):
                 flow_ew = total_e + total_w
 
             statuses = []
-            intensity_count = 0
             over_periods = []
             peak_val = 0
             peak_time = ""
@@ -804,17 +803,10 @@ def render_ai_panel(mock_scenario, flight_time_val):
             for idx, row in future_preview.iterrows():
                 density = row['Mật độ dự kiến']
                 if density > capacity:
-                    intensity_count += 1
-                    if intensity_count >= 2:
-                        statuses.append("Intensity Overload")
-                        over_periods.append(
-                            (row['Thời gian'], density, "INTENSITY"))
-                    else:
-                        statuses.append("Density Overload")
-                        over_periods.append(
-                            (row['Thời gian'], density, "DENSITY"))
+                    statuses.append("Quá tải")
+                    over_periods.append(
+                        (row['Thời gian'], density, "OVERLOAD"))
                 else:
-                    intensity_count = 0
                     statuses.append("Bình thường")
                 if density > peak_val:
                     peak_val = density
@@ -822,16 +814,11 @@ def render_ai_panel(mock_scenario, flight_time_val):
 
             future_preview['Tình trạng'] = statuses
 
-            has_intensity = any(p[2] == "INTENSITY" for p in over_periods)
-            has_density = any(p[2] == "DENSITY" for p in over_periods)
-            if has_intensity:
-                alert_level = "INTENSITY"
+            has_overload = any(p[2] == "OVERLOAD" for p in over_periods)
+            if has_overload:
+                alert_level = "OVERLOAD"
                 alert_label = "Cường độ"
                 alert_color = "#E11D48"
-            elif has_density:
-                alert_level = "DENSITY"
-                alert_label = "Mật độ"
-                alert_color = "#FFB020"
             else:
                 alert_level = "SAFE"
                 alert_label = "An toàn"
@@ -879,7 +866,7 @@ def render_ai_panel(mock_scenario, flight_time_val):
             col_int, col_flow = st.columns(2)
             
             with col_int:
-                st.subheader("Traffic Intensity (Quá tải theo giờ)")
+                st.subheader("Traffic Intensity (Số máy bay theo giờ)")
                 if mock_scenario != "Sử dụng Radar thực tế":
                     current_hr = pd.Timestamp.now().hour
                     if mock_scenario == "Giả lập: Quá tải Cường độ kéo dài":
@@ -892,8 +879,9 @@ def render_ai_panel(mock_scenario, flight_time_val):
                             'count': [0] * 24,
                         })
                 else:
-                    df_all['hour'] = pd.to_datetime(df_all['timestamp']).dt.hour
-                    df_intensity = df_all[df_all['aircraft_count'] > capacity].groupby('hour').size().reset_index(name='count')
+                    df_all['timestamp'] = pd.to_datetime(df_all['timestamp'])
+                    df_all['hour'] = df_all['timestamp'].dt.hour
+                    df_intensity = df_all.groupby('hour')['aircraft_count'].sum().reset_index(name='count')
                     if df_intensity.empty:
                         df_intensity = pd.DataFrame({
                             'hour': list(range(0, 24)),
@@ -901,7 +889,7 @@ def render_ai_panel(mock_scenario, flight_time_val):
                         })
                 int_chart = alt.Chart(df_intensity).mark_bar(opacity=0.85).encode(
                     x=alt.X('hour:O', title='Khung giờ (0-23h)'),
-                    y=alt.Y('count:Q', title='Số lần vượt Năng lực'),
+                    y=alt.Y('count:Q', title='Số máy bay (Intensity 30 phút)'),
                     color=alt.condition(
                         alt.datum['count'] > 0,
                         alt.value('#FB923C'),
@@ -911,7 +899,7 @@ def render_ai_panel(mock_scenario, flight_time_val):
                 ).properties(height=250)
                 st.altair_chart(int_chart, use_container_width=True)
                 if df_intensity['count'].sum() == 0:
-                    st.caption("0 sự cố trong ngày — hệ thống hoạt động dưới Ngưỡng Năng lực.")
+                    st.caption("0 chuyến trong cửa sổ — hệ thống chưa ghi nhận máy bay.")
 
             with col_flow:
                 st.subheader("Traffic Flow (Phân bổ Luồng bay)")
@@ -947,22 +935,14 @@ def render_ai_panel(mock_scenario, flight_time_val):
                     ).properties(height=250)
                     st.altair_chart(pie_chart, use_container_width=True)
 
-            if alert_level == "INTENSITY":
+            if alert_level == "OVERLOAD":
                 affected = [p[0] for p in over_periods]
                 st.error(
-                    f"**Cường độ — Intensity Overload:** "
-                    f"Lưu lượng vượt Ngưỡng Năng lực dồn ứ liên tục "
+                    f"**Cường độ — Quá tải:** "
+                    f"Lưu lượng vượt Ngưỡng Năng lực tại "
                     f"**{affected[0]}** → **{affected[-1]}**, "
                     f"đỉnh **{peak_time}** ({peak_val} chuyến). "
                     f"Kích hoạt quy trình ATFM giãn cách.")
-            elif alert_level == "DENSITY":
-                density_peak = max(p[1] for p in over_periods)
-                st.warning(
-                    f"**Mật độ — Density Overload:** "
-                    f"Quá tải cục bộ tại **{over_periods[0][0]}** "
-                    f"với **{density_peak} chuyến** "
-                    f"(vượt {density_peak - capacity} chuyến). "
-                    f"Chưa leo thành cường độ — chờ kỳ kế tiếp.")
             else:
                 st.success(
                     "Mật độ dự báo an toàn — không có rủi ro quá tải năng lực.")
